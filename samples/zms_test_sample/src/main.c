@@ -32,12 +32,32 @@ static struct bm_zms_fs fs;
 
 static const uint32_t entry_id_a = 43;
 static uint8_t pattern_a = 0x11;
-static uint8_t data_a[118];
+static uint8_t data_a[118] __attribute((aligned(4)));
 
 static const uint32_t entry_id_b = 42;
 static uint8_t pattern_b = 0xAA;
-static uint8_t data_b[20];
+static uint8_t data_b[20] __attribute((aligned(4)));
 
+static volatile bool write_notif;
+static volatile bool mount_notif;
+
+static void wait_for_write(void)
+{
+        while (!write_notif) {
+		log_flush();
+                k_cpu_idle();
+        }
+        write_notif = false;
+}
+
+static void wait_for_mount(void)
+{
+	while (!mount_notif) {
+		log_flush();
+		k_cpu_idle();
+	}
+	mount_notif = false;
+}
 
 static void do_stuff_timeout_handler(void *context)
 {
@@ -85,12 +105,16 @@ static void bm_zms_evt_handler(const struct bm_zms_evt *evt)
 {
 	switch (evt->evt_type) {
 	case BM_ZMS_EVT_MOUNT:
+		LOG_INF("ZMS mounted, result %d", evt->result);
+		mount_notif = true;
 		if (evt->result) {
 			LOG_ERR("Failed bm_zms_mount, err %d", evt->result);
 		}
 		break;
 	
 	case BM_ZMS_EVT_WRITE:
+		LOG_INF("Write event, id %u, result %d", evt->id, evt->result);
+		write_notif = true;
 		if (evt->result) {
 			LOG_ERR("Failed bm_zms_write, err %d", evt->result);
 		}
@@ -143,11 +167,7 @@ int main(void)
 	}
 
 	/* Wait for zms initialization. */
-	while (!fs.init_flags.initialized) {
-		log_flush();
-
-		k_cpu_idle();
-	}
+	wait_for_mount();
 
 	err = bm_timer_init(&do_stuff_timer, BM_TIMER_MODE_REPEATED, do_stuff_timeout_handler);
 	if (err) {
@@ -160,7 +180,6 @@ int main(void)
 		LOG_ERR("Failed to start do_stuff timer, err %d", err);
 		goto idle;
 	}
-
 idle:
 	while (true) {
 		log_flush();

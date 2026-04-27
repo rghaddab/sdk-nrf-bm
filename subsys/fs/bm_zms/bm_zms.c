@@ -1140,6 +1140,11 @@ static int zms_compute_prev_addr(struct bm_zms_fs *fs, uint64_t *addr)
 	struct zms_ate empty_ate;
 	struct zms_ate close_ate;
 
+	if (SECTOR_OFFSET(*addr) >= (fs->sector_size - 2 * fs->ate_size)) {
+		LOG_ERR("Something went wrong in computing previous ate address, addr is 0x%llx", *addr);
+		return -EIO;
+	}
+
 	*addr += fs->ate_size;
 	if ((SECTOR_OFFSET(*addr)) != (fs->sector_size - 2 * fs->ate_size)) {
 		return 0;
@@ -1230,8 +1235,7 @@ static int zms_sector_close(struct bm_zms_fs *fs)
 		cur_op.ate_entry.metadata = 0xffffffff;
 		cur_op.ate_entry.cycle_cnt = fs->sector_cycle;
 		zms_ate_crc8_update(&cur_op.ate_entry);
-		fs->ate_wra = zms_close_ate_addr(fs, fs->ate_wra);
-		cur_op.addr = fs->ate_wra;
+		cur_op.addr = zms_close_ate_addr(fs, fs->ate_wra);
 		cur_op.len = sizeof(struct zms_ate);
 		return zms_flash_ate_wrt(fs);
 	}
@@ -1243,6 +1247,7 @@ static int zms_gc_prepare(struct bm_zms_fs *fs)
 {
 	int rc;
 
+	fs->ate_wra = zms_close_ate_addr(fs, fs->ate_wra);
 	zms_sector_advance(fs, &fs->ate_wra);
 	rc = zms_get_sector_cycle(fs, fs->ate_wra, &fs->sector_cycle);
 	if (rc == -ENOENT) {
@@ -2248,7 +2253,8 @@ ssize_t bm_zms_read_hist(struct bm_zms_fs *fs, uint32_t id, void *data, size_t l
 		prev_found = zms_find_ate_with_id(fs, id, wlk_addr, fs->ate_wra, &wlk_ate,
 						  &wlk_prev_addr);
 		if (prev_found < 0) {
-			return prev_found;
+			rc = prev_found;
+			goto err;
 		}
 		if (prev_found) {
 			cnt_his++;
@@ -2260,7 +2266,7 @@ ssize_t bm_zms_read_hist(struct bm_zms_fs *fs, uint32_t id, void *data, size_t l
 			 */
 			rc = zms_compute_prev_addr(fs, &wlk_prev_addr);
 			if (rc) {
-				return rc;
+				goto err;
 			}
 			/* wlk_addr will be the start research address in the next loop */
 			wlk_addr = wlk_prev_addr;
@@ -2270,7 +2276,8 @@ ssize_t bm_zms_read_hist(struct bm_zms_fs *fs, uint32_t id, void *data, size_t l
 	}
 
 	if (((!prev_found) || (wlk_ate.id != id)) || (wlk_ate.len == 0U) || (cnt_his < cnt)) {
-		return -ENOENT;
+		rc = -ENOENT;
+		goto err;
 	}
 
 	if (wlk_ate.len <= ZMS_DATA_IN_ATE_SIZE) {
@@ -2296,7 +2303,8 @@ ssize_t bm_zms_read_hist(struct bm_zms_fs *fs, uint32_t id, void *data, size_t l
 				LOG_ERR("Invalid data CRC, ATE_CRC: 0x%08X, "
 					"computed_data_crc: 0x%08X",
 					wlk_ate.data_crc, computed_data_crc);
-				return -EIO;
+				rc = -EIO;
+				goto err;
 			}
 		}
 #endif
